@@ -268,14 +268,7 @@ class LDS:
 		xb[-1], Pb[-1] = xhatStore[-1], PStore[-1]
 		## smooth
 		for t in range(T-2,0,-1):
-			try:
-				S[t] = PStore[t] * self.A.T * PPredStore[t+1].I
-			except:
-				print t
-				print len(S)
-				print len(PPredStore)
-				print len(PStore)
-				raise
+			S[t] = PStore[t] * self.A.T * PPredStore[t+1].I
 			xb[t] = xhatStore[t] + S[t]*(xb[t+1] - xhatPredStore[t])
 			Pb[t] = PStore[t] + S[t] * (Pb[t+1] - PPredStore[t+1]) * S[t].T
 		# finalise
