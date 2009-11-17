@@ -54,13 +54,13 @@ class LDS:
 	Notes
 	----------
 	The Kalman Filter code is based on code originally written by Dr Sean
-	Anderson.		
+	Anderson. 
 	"""
 	
 	def __init__(self,A,B,C,Sw,Sv,x0):
 		
 		ny, nx = C.shape
-		nu = B.shape[0]
+		nu = B.shape[1]
 		
 		assert A.shape == (nx, nx)
 		assert B.shape == (nx, nu)
@@ -69,7 +69,7 @@ class LDS:
 		assert x0.shape == (nx,1)
 		
 		self.A = pb.matrix(A)
-		self.A = pb.matrix(B)
+		self.B = pb.matrix(B)
 		self.C = pb.matrix(C)
 		self.Sw = pb.matrix(Sw)
 		self.Sv = pb.matrix(Sv)		
@@ -85,7 +85,7 @@ class LDS:
 		log.info('initialised state space model')
 	
 	def transition_dist(self, x, u):
-		mean = self.A*x + self.B*x
+		mean = self.A*x + self.B*u
 		return pb.multivariate_normal(mean.A.flatten(),self.Sw,[1]).T
 	
 	def observation_dist(self, x):
@@ -114,7 +114,7 @@ class LDS:
 			than a generator
 		"""	
 		x = self.x0
-		for u in range(U):
+		for u in U:
 			y = self.observation_dist(x)
 			yield x,y
 			x = self.transition_dist(x, u)
@@ -171,10 +171,13 @@ class LDS:
 			A list of state covariance matrices
 		K : list of matrix
 			A list of Kalman gains
+		XPred : list of matrix
+			A list of uncorrected state predictions
 		PPred : list of matrix
 			A list of un-corrected state covariance matrices
 		
-		PPred[t] is A*P[t-1]*A + Sw. This is used in the RTS Smoother
+		XPred is A*x[t-1] + B*u[t-1] and PPred[t] is A*P[t-1]*A + Sw. These
+		are used in the RTS Smoother.
 		
 		See Also:
 		----------
@@ -209,7 +212,7 @@ class LDS:
 		# initialise the filter
 		xhat, P = Kpred(self.P0, xhat, U[0])
 		## filter
-		for y, u in zip(Y,U[1:]):
+		for y, u in zip(Y[:-1],U[1:]):
 			# store
 			xhatPredStore.append(xhat)
 			PPredStore.append(P)
@@ -222,7 +225,7 @@ class LDS:
 			# predict
 			xhat, P = Kpred(P,xhat, u);
 		
-		return xhatStore, PStore, KStore, PPredStore
+		return xhatStore, PStore, KStore, xhatPredStore, PPredStore
 	
 	def rtssmooth(self, Y, U):
 		"""Vanilla implementation of the Rauch Tung Streibel(RTS) smoother
@@ -256,15 +259,23 @@ class LDS:
 		log.info('running the RTS Smoother')
 		
 		# run the Kalman filter
-		xhatStore, PStore, KStore, PPredStore = self.kfilter(Y, U)
+		xhatStore, PStore, KStore, xhatPredStore, PPredStore = self.kfilter(Y, U)
 		# initialise the smoother
+		T = len(Y)-1
 		xb = [None]*T
 		Pb = [None]*T
 		S = [None]*T
 		xb[-1], Pb[-1] = xhatStore[-1], PStore[-1]
 		## smooth
 		for t in range(T-2,0,-1):
-			S[t] = PStore[t]*self.A.T * PPredStore[t+1].I
+			try:
+				S[t] = PStore[t] * self.A.T * PPredStore[t+1].I
+			except:
+				print t
+				print len(S)
+				print len(PPredStore)
+				print len(PStore)
+				raise
 			xb[t] = xhatStore[t] + S[t]*(xb[t+1] - xhatPredStore[t])
 			Pb[t] = PStore[t] + S[t] * (Pb[t+1] - PPredStore[t+1]) * S[t].T
 		# finalise
@@ -272,7 +283,7 @@ class LDS:
 		Pb[0] = PStore[0]
 		# iterate a final time to calucate the cross covariance matrices
  		M = [None]*T
-		M[-1]=(pb.eye(nx)-KStore[-1]*self.C) * self.A*PStore[-2]
+		M[-1]=(pb.eye(self.nx)-KStore[-1]*self.C) * self.A*PStore[-2]
 		for t in range(T-2,1,-1):
 		    M[t]=PStore[t]*S[t-1].T + S[t]*(M[t+1] - self.A*PStore[t])*S[t-1].T
 		M[1] = matlib.eye(self.nx)
