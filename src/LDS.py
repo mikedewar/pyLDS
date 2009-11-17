@@ -50,6 +50,11 @@ class LDS:
 		Cross covariance matrix sequence
 	P: list of matrix
 		Covariance matrix sequence
+		
+	Notes
+	----------
+	The Kalman Filter code is based on code originally written by Dr Sean
+	Anderson.		
 	"""
 	
 	def __init__(self,A,B,C,Sw,Sv,x0):
