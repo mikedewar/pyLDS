@@ -8,11 +8,11 @@ log = logging.getLogger('LDS')
 
 class LDS:
 	"""class defining a linear, gaussian, discrete-time Linear Dynamic System.
-
+	
 	Arguments
 	----------
-	A : matrix
-		State transition matrix.
+	A : matrix or list of matrix
+		State transition matrix. Supply a list for non-stationary systems.
 	B : matrix
 		State transition matrix.
 	C : matrix
@@ -24,9 +24,12 @@ class LDS:
 	x0: matrix
 		Initial state vector
 	
+	If you supply a list of A matrices, then the observations and inputs you
+	use in each method will need to be the same length as the list of A matrices
+	
 	Attributes
 	----------
-	A : matrix
+	A : matrix or list of matrix
 		State transition matrix.
 	B : matrix
 		State transition matrix.
@@ -54,43 +57,107 @@ class LDS:
 	Notes
 	----------
 	The Kalman Filter code is based on code originally written by Dr Sean
-	Anderson. 
+	Anderson.
 	"""
 	
 	def __init__(self,A,B,C,Sw,Sv,x0):
 		
 		ny, nx = C.shape
-		nu = B.shape[1]
+		nu = B.shape[1]	
 		
-		assert A.shape == (nx, nx)
+		if type(A) is list:
+			for Ai in A:
+				assert Ai.shape == (nx, nx)
+		else:
+			assert A.shape == (nx, nx)
 		assert B.shape == (nx, nu)
 		assert Sw.shape == (nx, nx)
 		assert Sv.shape == (ny, ny)
 		assert x0.shape == (nx,1)
 		
-		self.A = pb.matrix(A)
-		self.B = pb.matrix(B)
-		self.C = pb.matrix(C)
-		self.Sw = pb.matrix(Sw)
-		self.Sv = pb.matrix(Sv)		
+		self.A = A
+		self.B = B
+		self.C = C
+		self.Sw = Sw
+		self.Sv = Sv
 		self.ny = ny
 		self.nx = nx
 		self.nu = nu
 		self.x0 = x0
 		
 		# initial condition
-		# TODO - not sure about this as a prior...
-		self.P0 = 40000* pb.matrix(pb.ones((self.nx,self.nx)))
+		# TODO - not sure about this as a prior covariance...
+		self.P0 = 40000 * pb.matrix(pb.ones((self.nx,self.nx)))
 		
 		log.info('initialised state space model')
 	
+	def gen_A(self):
+		"""
+		generator function for the state transition matrix A. 
+		
+		Arguments
+		----------
+		A : matrix or list of matrix
+			The state transition matrix.
+			
+		Notes
+		----------
+		This is written so as to incorporate a possibly time varying transition 
+		matrix. If you supply a list of matrices for A, then this generator 
+		yields the next item in that list. If you have a stationary system, 
+		and hence only provide a single matrix for A, this generator will 
+		always yield that matrix.
+		"""
+		if type(self.A) is list:
+			for At in self.A:
+				yield At
+		else:
+			while 1:
+				yield self.A
+				
+	def gen_A_reverse(self):
+		"""
+		generator function for the state transition matrix A. 
+		
+		Arguments
+		----------
+		A : matrix or list of matrix
+			The state transition matrix.
+			
+		Notes
+		----------
+		This method is essentially the same as LDS.gen_A() except that the A
+		matrices are returned in the reverse order. Again, if the system is
+		stationary, then this will always yield the stationary A matrix. This
+		reversed generator is useful for a backwards pass.
+		"""
+		if type(self.A) is list:
+			for At in reversed(self.A):
+				yield At
+		else:
+			while 1:
+				yield self.A
+	
+	def gaussian(self, mean, covariance):
+		"""
+		wraps pylab.multivariate_normal so it accepts a vector argument
+		
+		Arguments
+		----------
+		mean : matrix
+			mean of a multivariate normal distribution written as a nx1 matrix
+		covariance: matrix
+			covariance matrix of a multivariate normal distribution
+		"""
+		return pb.multivariate_normal(mean.A.flatten(),covariance,[1]).T
+	
 	def transition_dist(self, x, u):
-		mean = self.A*x + self.B*u
-		return pb.multivariate_normal(mean.A.flatten(),self.Sw,[1]).T
+		mean = self.A_gen.next()*x + self.B*u
+		return self.gaussian(mean,self.Sw)
 	
 	def observation_dist(self, x):
 		mean = self.C*x
-		return pb.multivariate_normal(mean.A.flatten(),self.Sv,[1]).T
+		return self.gaussian(mean,self.Sv)
 		
 	def gen(self,U):
 		"""
@@ -113,6 +180,9 @@ class LDS:
 		LDS.simulate() : returns a sequence of states and observations, rather
 			than a generator
 		"""	
+		# intialise A matrix generator
+		self.A_gen = self.gen_A()
+		# intial state
 		x = self.x0
 		for u in U:
 			y = self.observation_dist(x)
@@ -188,8 +258,9 @@ class LDS:
 		
 		# Predictor
 		def Kpred(P, x, u):
-			x = self.A*x + self.B*u
-			P = self.A*P*self.A.T + self.Sw
+			A = self.A_gen.next()
+			x = A*x + self.B*u
+			P = A*P*A.T + self.Sw
 			return x,P
 
 		# Corrector
@@ -199,7 +270,8 @@ class LDS:
 			P = (pb.eye(self.nx)-K*self.C)*P;
 			return x, P, K
 
-		## initialise	
+		## initialise
+		self.A_gen = self.gen_A()
 		xhat = self.x0
 		nx = self.nx
 		ny = self.ny
@@ -261,24 +333,31 @@ class LDS:
 		# run the Kalman filter
 		xhatStore, PStore, KStore, xhatPredStore, PPredStore = self.kfilter(Y, U)
 		# initialise the smoother
+		A = self.gen_A_reverse()
 		T = len(Y)-1
 		xb = [None]*T
 		Pb = [None]*T
 		S = [None]*T
 		xb[-1], Pb[-1] = xhatStore[-1], PStore[-1]
+		# step through A a couple of times to prepare for the backwards pass
+		for t in range(T,T-2,-1):
+			A.next()
 		## smooth
 		for t in range(T-2,0,-1):
-			S[t] = PStore[t] * self.A.T * PPredStore[t+1].I
+			S[t] = PStore[t] * A.next().T * PPredStore[t+1].I
 			xb[t] = xhatStore[t] + S[t]*(xb[t+1] - xhatPredStore[t])
 			Pb[t] = PStore[t] + S[t] * (Pb[t+1] - PPredStore[t+1]) * S[t].T
 		# finalise
 		xb[0] = xhatStore[0]
 		Pb[0] = PStore[0]
 		# iterate a final time to calucate the cross covariance matrices
+		A = self.gen_A_reverse()
+		# we need to step through the final A matrix
+		A.next()
  		M = [None]*T
-		M[-1]=(pb.eye(self.nx)-KStore[-1]*self.C) * self.A*PStore[-2]
+		M[-1]=(pb.eye(self.nx)-KStore[-1]*self.C) * A.next()*PStore[-2]
 		for t in range(T-2,1,-1):
-		    M[t]=PStore[t]*S[t-1].T + S[t]*(M[t+1] - self.A*PStore[t])*S[t-1].T
+		    M[t]=PStore[t]*S[t-1].T + S[t]*(M[t+1] - A.next()*PStore[t])*S[t-1].T
 		M[1] = matlib.eye(self.nx)
 		M[0] = matlib.eye(self.nx)
 		
