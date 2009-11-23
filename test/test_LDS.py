@@ -13,6 +13,16 @@ def setup():
 	x0 = pb.matrix([[1],[1]])
 	return LDS.LDS(A,B,C,Q,R,x0)
 
+def setup_nonstationary():
+	T = 100
+	A_ns = [pb.matrix([[0.8,-0.4],[1,0]]) for t in range(T)]
+	B = pb.matrix([[1,0],[0,1]])
+	C = pb.matrix([[1,0],[0,1],[1,1]])
+	Q = 2.3*pb.matrix(pb.eye(2))
+	R = 0.2*pb.matrix(pb.eye(3))
+	x0 = pb.matrix([[1],[1]])
+	return T, LDS.LDS(A_ns,B,C,Q,R,x0)
+
 def within_dist(mean, covariance, test_point):
 	"""	tests to see if a test point is within the 99% confidence interval of 
 	the normal distribution specified by its mean and covariance
@@ -58,6 +68,14 @@ def test_rtssmoother():
 	U = [mb.rand(2,1) for t in range(T)]
 	Xo, Y = model.simulate(U)
 	X, P, K, M = model.rtssmooth(Y, U)
+	for (x, xo, p) in zip(X,Xo,P):
+		assert within_dist(x,p,xo)
+
+def test_kfilter_nonstationary():
+	T, model = setup_nonstationary()
+	U = [mb.rand(2,1) for t in range(T)]
+	Xo, Y = model.simulate(U)
+	X, P, K, XPred, PPred = model.kfilter(Y, U)
 	for (x, xo, p) in zip(X,Xo,P):
 		assert within_dist(x,p,xo)
 
