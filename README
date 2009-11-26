@@ -3,3 +3,5 @@ This is a module for dealing with linear dynamical systems in Python.
 The source code is found in src/ and unit tests are in test/.
 
 The approach used is to treat the model as an object, then learning and inference routines are methods of the model object.
+
+Licensed under the Gnu General Public License, see COPYING.
