@@ -23,6 +23,8 @@ class LDS:
 		Observation noise covariance matrix
 	x0: matrix
 		Initial state vector
+	Pi0: matrix
+		initial stte covariance
 	
 	If you supply a list of A matrices, then the observations and inputs you
 	use in each method will need to be the same length as the list of A matrices
@@ -45,6 +47,8 @@ class LDS:
 		number of outputs
 	x0: matrix
 		intial state
+	Pi0: matrix
+		initial stte covariance
 	X: list of matrix
 		state sequence
 	K: list of matrix 
@@ -60,7 +64,7 @@ class LDS:
 	Anderson.
 	"""
 	
-	def __init__(self,A,B,C,Sw,Sv,x0):
+	def __init__(self,A,B,C,Sw,Sv,x0,Pi0):
 		
 		ny, nx = C.shape
 		nu = B.shape[1]	
@@ -84,6 +88,7 @@ class LDS:
 		self.nx = nx
 		self.nu = nu
 		self.x0 = x0
+		self.Pi0 = Pi0
 		
 		# initial condition
 		# TODO - not sure about this as a prior covariance...
@@ -91,7 +96,7 @@ class LDS:
 		
 		log.info('initialised state space model')
 	
-	def gen_A(self):
+	def gen_A(self, reverse = False):
 		"""
 		generator function for the state transition matrix A. 
 		
@@ -99,6 +104,8 @@ class LDS:
 		----------
 		A : matrix or list of matrix
 			The state transition matrix.
+		reverse : boolean (False)
+			reverse generator flag
 			
 		Notes
 		----------
@@ -107,40 +114,26 @@ class LDS:
 		yields the next item in that list. If you have a stationary system, 
 		and hence only provide a single matrix for A, this generator will 
 		always yield that matrix.
-		"""
-		if type(self.A) is list:
-			for At in self.A:
-				yield At
-		else:
-			while 1:
-				yield self.A
-				
-	def gen_A_reverse(self):
-		"""
-		generator function for the state transition matrix A. 
 		
-		Arguments
-		----------
-		A : matrix or list of matrix
-			The state transition matrix.
-			
-		Notes
-		----------
-		This method is essentially the same as LDS.gen_A() except that the A
-		matrices are returned in the reverse order. Again, if the system is
-		stationary, then this will always yield the stationary A matrix. This
-		reversed generator is useful for a backwards pass.
+		If you specify reverse = True then the generator will return the A
+		list of A matrices backwards. This doesn't make much sense if you use
+		a stationary A matrix. This is useful for smoothing steps.
 		"""
 		if type(self.A) is list:
-			for At in reversed(self.A):
-				yield At
+			if reverse:	
+				for At in reversed(self.A):
+					yield At
+			else:
+				for At in self.A:
+					yield At
 		else:
 			while 1:
 				yield self.A
-	
-	def gaussian(self, mean, covariance):
+
+	def normal(self, mean, covariance, x=None):
 		"""
-		wraps pylab.multivariate_normal so it accepts a vector argument
+		sample from a normal distribution or specify `x` for the likelihood of
+		that point under the model.
 		
 		Arguments
 		----------
@@ -148,16 +141,123 @@ class LDS:
 			mean of a multivariate normal distribution written as a nx1 matrix
 		covariance: matrix
 			covariance matrix of a multivariate normal distribution
+		x : matrix (None)
+			point at which to evaluate the normal distribution
+		
+		Notes
+		----------
+		If you specify x then this function returns the likelihood 
+		p(x|mean,covariance). If you leave x unspecified then this will return
+		a sample from the normal distribution specified by the mean and
+		covariance.
 		"""
-		return pb.multivariate_normal(mean.A.flatten(),covariance,[1]).T
+		if x:
+			# TODO what's the normalising constant of a multivariate G?
+			const = 1.0 
+			return const * pylab.exp(-0.5*(y-mean).T * self.Svinv * (y-mean))
+		else:
+			return pb.multivariate_normal(mean.A.flatten(),covariance,[1]).T
 	
-	def transition_dist(self, x, u):
+	def transition_dist(self, x, u, xdash=None):
+		"""
+		transition distribution
+		
+		Arguments
+		----------
+		x : matrix
+			current state
+		u : matrix
+			current input
+		xdash : matrix (None)
+			next state
+		
+		Notes
+		----------
+		Specify xdash for the likelihood, leave it blank to sample from the 
+		transition distribution.
+		
+		See Also
+		----------
+		self.normal() - more explanation associated with the sampling/likelihood
+			thing.
+		"""
 		mean = self.A_gen.next()*x + self.B*u
-		return self.gaussian(mean,self.Sw)
+		return self.normal(mean,self.Sw,xdash)
 	
-	def observation_dist(self, x):
+	def observation_dist(self, x, y=None):
+		"""
+		observation distribution
+		
+		Arguments
+		----------
+		x : matrix
+			current state
+		y : matrix
+			current output
+		
+		Notes
+		----------
+		Specify output for the likelihood, leave it blank to sample from the 
+		observation distribution.
+		
+		See Also
+		----------
+		self.normal() - more explanation associated with the sampling/likelihood
+			thing.
+		"""
 		mean = self.C*x
-		return self.gaussian(mean,self.Sv)
+		return self.normal(mean,self.Sv,y)
+	
+	def init_dist(self,x0=None):
+		"""
+		initial distribution
+		
+		Arguments
+		----------
+		x0 : matrix (None)
+			initial state
+		
+		Notes
+		----------
+		Specify x0 for the likelihood, leave it blank to sample from the 
+		initial distribution.
+		
+		See Also
+		----------
+		self.normal() - more explanation associated with the sampling/likelihood
+			thing.
+		"""
+		return self.normal(self.x0,self.Pi0,x0)
+	
+	def likelihood(self, x0, X, Y):
+		"""returns the likelihood of the states `X` and observations `Y` under
+		the current model p(X,Y|M)
+		
+		Arguments
+		----------
+		x0 : matrix
+			initial state
+		X : list of matrix
+			state sequence
+		Y : list of matrix
+			observation sequence
+		
+		Notes
+		----------
+		This calculates 
+			p(X,Y|M) = p(x0)\prod_{t=1}^Tp(y_t|x_t)\prod_{t=1}^Tp(x_t|x_{t-1})
+		using the model currently defined in self.
+		"""
+		# Dig the functional approach! Or does this just make it hard to read?
+		return pylab.prod([
+			pylab.prod([
+				self.observation_dist(x,y) for (x,y) in zip(X,Y)
+				]),
+			pylab.prod([
+				self.transition_dist(x,xdash) for (x,y) in zip(X[:-1],X[1:])
+				]),
+			self.inital_dist(x0)
+			])
 		
 	def gen(self,U):
 		"""
@@ -183,7 +283,7 @@ class LDS:
 		# intialise A matrix generator
 		self.A_gen = self.gen_A()
 		# intial state
-		x = self.x0
+		x = self.initla_dist()
 		for u in U:
 			y = self.observation_dist(x)
 			yield x,y
@@ -333,12 +433,13 @@ class LDS:
 		# run the Kalman filter
 		xhatStore, PStore, KStore, xhatPredStore, PPredStore = self.kfilter(Y, U)
 		# initialise the smoother
-		A = self.gen_A_reverse()
+		A = self.gen_A(reverse=True)
 		T = len(Y)-1
 		xb = [None]*T
 		Pb = [None]*T
 		S = [None]*T
-		xb[-1], Pb[-1] = xhatStore[-1], PStore[-1]
+		xb[-1] = xhatStore[-1]
+		Pb[-1] = PStore[-1]
 		# step through A a couple of times to prepare for the backwards pass
 		for t in range(T,T-2,-1):
 			A.next()
