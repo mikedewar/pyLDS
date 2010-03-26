@@ -9,12 +9,12 @@ log = logging.getLogger('LDS')
 class LDS:
 	"""class defining a linear, gaussian, discrete-time Linear Dynamic System.
 	
-	Arguments
+	Parameters
 	----------
 	A : matrix or list of matrix
 		State transition matrix. Supply a list for non-stationary systems.
 	B : matrix
-		State transition matrix.
+		Input matrix.
 	C : matrix
 		Observation matrix.
 	Sw : matrix
@@ -34,7 +34,7 @@ class LDS:
 	A : matrix or list of matrix
 		State transition matrix.
 	B : matrix
-		State transition matrix.
+		Input matrix.
 	C : matrix
 		Observation matrix.
 	Sw : matrix
@@ -48,7 +48,7 @@ class LDS:
 	x0: matrix
 		intial state
 	Pi0: matrix
-		initial stte covariance
+		initial state covariance
 	X: list of matrix
 		state sequence
 	K: list of matrix 
@@ -100,7 +100,7 @@ class LDS:
 		"""
 		generator function for the state transition matrix A. 
 		
-		Arguments
+		Parameters
 		----------
 		A : matrix or list of matrix
 			The state transition matrix.
@@ -135,7 +135,7 @@ class LDS:
 		sample from a normal distribution or specify `x` for the likelihood of
 		that point under the model.
 		
-		Arguments
+		Parameters
 		----------
 		mean : matrix
 			mean of a multivariate normal distribution written as a nx1 matrix
@@ -151,10 +151,10 @@ class LDS:
 		a sample from the normal distribution specified by the mean and
 		covariance.
 		"""
-		if x:
+		if x is not None:
 			# TODO what's the normalising constant of a multivariate G?
 			const = 1.0 
-			return const * pylab.exp(-0.5*(y-mean).T * self.Svinv * (y-mean))
+			return const * pb.exp(-0.5*(x-mean).T * covariance.I * (x-mean))
 		else:
 			return pb.multivariate_normal(mean.A.flatten(),covariance,[1]).T
 	
@@ -162,7 +162,7 @@ class LDS:
 		"""
 		transition distribution
 		
-		Arguments
+		Parameters
 		----------
 		x : matrix
 			current state
@@ -188,7 +188,7 @@ class LDS:
 		"""
 		observation distribution
 		
-		Arguments
+		Parameters
 		----------
 		x : matrix
 			current state
@@ -212,7 +212,7 @@ class LDS:
 		"""
 		initial distribution
 		
-		Arguments
+		Parameters
 		----------
 		x0 : matrix (None)
 			initial state
@@ -229,11 +229,11 @@ class LDS:
 		"""
 		return self.normal(self.x0,self.Pi0,x0)
 	
-	def likelihood(self, x0, X, Y):
-		"""returns the likelihood of the states `X` and observations `Y` under
-		the current model p(X,Y|M)
+	def likelihood(self, x0, X, Y, U):
+		"""returns the log likelihood of the states `X` and observations `Y` 
+		under the current model p(X,Y|M)
 		
-		Arguments
+		Parameters
 		----------
 		x0 : matrix
 			initial state
@@ -241,6 +241,8 @@ class LDS:
 			state sequence
 		Y : list of matrix
 			observation sequence
+		U : list of matrix
+			input sequence
 		
 		Notes
 		----------
@@ -248,22 +250,19 @@ class LDS:
 			p(X,Y|M) = p(x0)\prod_{t=1}^Tp(y_t|x_t)\prod_{t=1}^Tp(x_t|x_{t-1})
 		using the model currently defined in self.
 		"""
-		# Dig the functional approach! Or does this just make it hard to read?
-		return pylab.prod([
-			pylab.prod([
-				self.observation_dist(x,y) for (x,y) in zip(X,Y)
-				]),
-			pylab.prod([
-				self.transition_dist(x,xdash) for (x,y) in zip(X[:-1],X[1:])
-				]),
-			self.inital_dist(x0)
-			])
+		l1 = pb.sum([pb.log(self.observation_dist(x,y)) for (x,y) in zip(X,Y)])
+		l2 = pb.sum([
+			pb.log(self.transition_dist(x,u,xdash)) for (x,u,xdash) in zip(X[:-1],U[:-1],X[1:])])
+		l3 = self.init_dist(x0)
+		l = l1 + l2 + l3
+		assert not pb.isinf(l).any(), (l1,l2,l3)
+		return l
 		
 	def gen(self,U):
 		"""
 		generator for the state space model
 		
-		Arguments
+		Parameters
 		----------
 		U : list of matrix
 			input sequence
@@ -283,7 +282,7 @@ class LDS:
 		# intialise A matrix generator
 		self.A_gen = self.gen_A()
 		# intial state
-		x = self.initla_dist()
+		x = self.x0
 		for u in U:
 			y = self.observation_dist(x)
 			yield x,y
@@ -293,7 +292,7 @@ class LDS:
 		"""
 		simulates the state space model
 
-		Arguments
+		Parameters
 		----------
 		U : list of matrix
 			input sequence
@@ -324,7 +323,7 @@ class LDS:
 	def kfilter(self, Y, U):
 		"""Vanilla implementation of the Kalman Filter
 		
-		Arguments
+		Parameters
 		----------
 		Y : list of matrix
 			A list of observation vectors
@@ -402,7 +401,7 @@ class LDS:
 	def rtssmooth(self, Y, U):
 		"""Vanilla implementation of the Rauch Tung Streibel(RTS) smoother
 		
-		Arguments
+		Parameters
 		----------
 		Y : list of matrix
 			A list of observation vectors
@@ -452,7 +451,7 @@ class LDS:
 		xb[0] = xhatStore[0]
 		Pb[0] = PStore[0]
 		# iterate a final time to calucate the cross covariance matrices
-		A = self.gen_A_reverse()
+		A = self.gen_A(reverse=True)
 		# we need to step through the final A matrix
 		A.next()
  		M = [None]*T
@@ -463,6 +462,21 @@ class LDS:
 		M[0] = matlib.eye(self.nx)
 		
 		return xb, Pb, KStore, M
+	
+	def EM(self,Y,U,eps = 0.000000001):
+		converged = False
+		l = [1000]
+		while not converged:	
+			# E step
+			X, P, K, M = self.rtssmooth(Y, U)
+			Xi11 = pb.sum([Pt + x*x.T for Pt,x in zip(P,X)],0)
+			Xi10 = pb.sum([Mt + x1*x.T for Mt,x1,x in zip(M[1:],X[:-1],X[1:])],0)
+			# M step
+			self.A = pb.inv(Xi11)*Xi10
+			l.append(self.likelihood(self.x0,X,Y,U))
+			converged = abs(l[-1] - l[-2]) < eps 
+			print l[-1]
+		return l, X, P
 
 
 if __name__ == "__main__":
