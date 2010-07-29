@@ -4,7 +4,6 @@ import sys
 import logging
 
 logging.basicConfig(stream=sys.stdout,level=logging.INFO)
-log = logging.getLogger('LDS')
 
 class LDS:
 	"""class defining a linear, gaussian, discrete-time Linear Dynamic System.
@@ -24,7 +23,7 @@ class LDS:
 	x0: matrix
 		Initial state vector
 	Pi0: matrix
-		initial stte covariance
+		initial state covariance
 	
 	If you supply a list of A matrices, then the observations and inputs you
 	use in each method will need to be the same length as the list of A matrices
@@ -73,11 +72,11 @@ class LDS:
 			for Ai in A:
 				assert Ai.shape == (nx, nx)
 		else:
-			assert A.shape == (nx, nx)
-		assert B.shape == (nx, nu)
-		assert Sw.shape == (nx, nx)
-		assert Sv.shape == (ny, ny)
-		assert x0.shape == (nx,1)
+			assert A.shape == (nx, nx), A.shape
+		assert B.shape == (nx, nu), B.shape
+		assert Sw.shape == (nx, nx), Sw.shape
+		assert Sv.shape == (ny, ny), Sv.shape
+		assert x0.shape == (nx,1), x0.shape
 		
 		self.A = A
 		self.B = B
@@ -93,8 +92,21 @@ class LDS:
 		# initial condition
 		# TODO - not sure about this as a prior covariance...
 		self.P0 = 40000 * pb.matrix(pb.ones((self.nx,self.nx)))
-		
-		log.info('initialised state space model')
+		self.log = logging.getLogger('LDS')
+		# check for stability
+		self.is_stable()
+		self.log.info('initialised state space model')
+	
+	def is_stable(self):
+	    if type(self.A)==list:
+	        raise NotImplementedError
+	    else:
+	        if any(abs(pb.linalg.eigvals(self.A))>1):
+	            self.log.warn("Unstable Linear Dynamic System")
+	            print pb.linalg.eigvals(self.A)
+	            return False
+	        else:
+	            return True
 	
 	def gen_A(self, reverse = False):
 		"""
@@ -102,8 +114,6 @@ class LDS:
 		
 		Parameters
 		----------
-		A : matrix or list of matrix
-			The state transition matrix.
 		reverse : boolean (False)
 			reverse generator flag
 			
@@ -310,7 +320,7 @@ class LDS:
 			than a sequence of states and observations
 		"""
 		
-		log.info('sampling from the state space model')
+		self.log.info('sampling from the state space model')
 		
 		X = []
 		Y = []
@@ -353,7 +363,7 @@ class LDS:
 		LDS.rtssmooth() : an implementation of the RTS Smoother
 		"""
 		
-		log.info('running the Kalman filter')
+		self.log.info('running the Kalman filter')
 		
 		# Predictor
 		def Kpred(P, x, u):
@@ -427,7 +437,7 @@ class LDS:
 		LDS.kfilter() - an implementation of the Kalman Filter
 		"""
 		
-		log.info('running the RTS Smoother')
+		self.log.info('running the RTS Smoother')
 		
 		# run the Kalman filter
 		xhatStore, PStore, KStore, xhatPredStore, PPredStore = self.kfilter(Y, U)
